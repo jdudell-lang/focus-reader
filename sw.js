@@ -1,4 +1,4 @@
-const CACHE='focus-reader-v5-2-layout-1';
+const CACHE='focus-reader-v6-cloud-1';
 const appFiles=[
   'index.html',
   'app.js',

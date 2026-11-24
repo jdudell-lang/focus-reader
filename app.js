@@ -10,7 +10,7 @@ async function getBook(id){let s=await store();return new Promise((r,j)=>{let q=
 async function removeBook(id){let s=await store('readwrite');return new Promise((r,j)=>{let q=s.delete(id);q.onsuccess=r;q.onerror=()=>j(q.error)})}
 const prefsKey='focus-reader-v4-prefs';const lastBookKey='focus-reader-last-book';
 function preferences(){try{return JSON.parse(localStorage.getItem(prefsKey)||'{}')}catch{return {}}}
-function savePreferences(){localStorage.setItem(prefsKey,JSON.stringify({charLength:$('charLength').value,dim:$('dim').value,fontSize:$('fontSize').value,lineSpacing:$('lineSpacing').value}))}
+function savePreferences(){localStorage.setItem(prefsKey,JSON.stringify({charLength:$('charLength').value,dim:$('dim').value,fontSize:$('fontSize').value,lineSpacing:$('lineSpacing').value}));localStorage.setItem('focus-reader-settings-dirty','1');queueCloudSync()}
 function applyPreferences(){const p=preferences();for(const id of ['charLength','dim','fontSize','lineSpacing'])if(p[id]!==undefined)$(id).value=p[id];document.documentElement.style.setProperty('--dim',String(+$('dim').value/100));document.documentElement.style.setProperty('--reader-font',$('fontSize').value+'px');document.documentElement.style.setProperty('--reader-line',$('lineSpacing').value);$('charLengthValue').textContent=$('charLength').value+' characters';$('fontSizeValue').textContent=$('fontSize').value+'px';$('lineSpacingValue').textContent=$('lineSpacing').value;}
 function wordTokens(text){return text.trim().match(/\S+/g)||[]}
 function buildSegments(source, target){
@@ -52,7 +52,7 @@ function rebuildSegments(wordPosition=0){
 function currentWordOffset(){return segmentStarts[position]||0}
 function status(t){$('status').textContent=t}
 function splitText(text){return (text.match(/[^.!?]+(?:[.!?]+(?=\s|$)|$)/g)||[]).map(s=>s.trim()).filter(s=>s.length>1)}
-async function importPdf(file){
+async function importPdf(file,opts={}){
  status('Extracting textbook text and layout…');
  try{
   const bytes=await file.arrayBuffer();
@@ -92,9 +92,9 @@ async function importPdf(file){
     flush();
   }
   if(blocks.join(' ').length<50)throw Error('No readable text found. This may be a scanned PDF.');
-  const id=file.name+'-'+file.size,existing=await getBook(id);
+  const id=opts.bookId||file.name+'-'+file.size,existing=await getBook(id);
   const book={id,title:file.name,sentences:blocks,kinds,position:existing?.position||0,wordOffset:existing?.wordOffset,chapters:starts,pageStarts:pageBlockStarts,glossary:existing?.glossary||{},pdfData:new Uint8Array(bytes)};
-  await putBook(book);await refreshLibrary();await openBook(id);
+  book.syncDirty=!opts.fromCloud;book.localUpdatedAt=Date.now();await putBook(book);if(!opts.fromCloud)queueCloudSync();await refreshLibrary();if(!opts.silent)await openBook(id);
   status('Imported '+blocks.length+' text blocks across '+pdf.numPages+' pages. Layout is approximate; original pages are available.');
  }catch(e){status('Import failed: '+e.message)}
 }
@@ -137,7 +137,7 @@ function scheduleRestoreScroll(){
   }));
 }
 function areaSentence(i){return document.querySelector(`.sentence[data-index="${i}"]`)}
-let saveTimer;function savePosition(){clearTimeout(saveTimer);saveTimer=setTimeout(async()=>{if(!bookId)return;let b=await getBook(bookId);if(b){b.position=sourceIndexAtWord(currentWordOffset());b.wordOffset=currentWordOffset();await putBook(b)}},250)}
+let saveTimer;function savePosition(){clearTimeout(saveTimer);saveTimer=setTimeout(async()=>{if(!bookId)return;let b=await getBook(bookId);if(b){b.position=sourceIndexAtWord(currentWordOffset());b.wordOffset=currentWordOffset();b.syncDirty=true;b.localUpdatedAt=Date.now();await putBook(b);queueCloudSync()}},250)}
 function sourceIndexAtWord(word){
   let total=0;for(let i=0;i<sourceSentences.length;i++){total+=wordTokens(sourceSentences[i]).length;if(total>word)return i}
   return Math.max(0,sourceSentences.length-1);
@@ -182,7 +182,7 @@ function moveWord(dx,dy){let words=wordsInFocus();if(!words.length)return;select
 const builtins={cuneiform:'An ancient writing system using wedge-shaped marks.',dynasty:'A succession of rulers from the same family.',empire:'A state governing multiple territories or peoples.',civilization:'A complex society with cities, institutions, and cultural traditions.',mesopotamia:'A historical region between the Tigris and Euphrates rivers.',city:'A large permanent human settlement.'};
 async function lookupWord(){let word=wordsInFocus()[selectedWord];if(!word)return;definitionReturn='words';await openDefinition(word)}
 async function openDefinition(word){definitionTerm=word;mode='definition';$('wordPanel').hidden=true;$('glossaryPanel').hidden=true;$('definitionPanel').hidden=false;$('definitionTitle').textContent=word;$('definitionBody').textContent=glossary[word.toLowerCase()]||builtins[word.toLowerCase()]||'Looking up definition… (internet required for new words)';if(glossary[word.toLowerCase()]||builtins[word.toLowerCase()])return;try{let controller=new AbortController();let timeout=setTimeout(()=>controller.abort(),5500);let response=await fetch('https://api.dictionaryapi.dev/api/v2/entries/en/'+encodeURIComponent(word),{signal:controller.signal});clearTimeout(timeout);if(!response.ok)throw Error('No entry');let data=await response.json();let meaning=data[0]?.meanings?.[0]?.definitions?.[0]?.definition;if(!meaning)throw Error('No entry');if(mode==='definition'&&definitionTerm===word)$('definitionBody').textContent=meaning}catch{if(mode==='definition'&&definitionTerm===word)$('definitionBody').textContent='No offline definition available. Connect to the internet or add a custom definition.'}}
-async function saveGlossary(){let word=definitionTerm.toLowerCase();let val=$('definitionBody').textContent;if(val.startsWith('Looking up')||val.startsWith('No offline')){val=prompt('Enter a definition for '+definitionTerm+':')||''}if(!val)return;glossary[word]=val;let b=await getBook(bookId);if(b){b.glossary=glossary;await putBook(b)}$('definitionBody').textContent=val;status('Saved '+definitionTerm+' to glossary')}
+async function saveGlossary(){let word=definitionTerm.toLowerCase();let val=$('definitionBody').textContent;if(val.startsWith('Looking up')||val.startsWith('No offline')){val=prompt('Enter a definition for '+definitionTerm+':')||''}if(!val)return;glossary[word]=val;let b=await getBook(bookId);if(b){b.glossary=glossary;b.syncDirty=true;b.localUpdatedAt=Date.now();await putBook(b);queueCloudSync()}$('definitionBody').textContent=val;status('Saved '+definitionTerm+' to glossary')}
 function showGlossary(){if(!sentences.length)return;if(mode==='glossary'){closeModes();return}mode='glossary';selectedTerm=0;$('wordPanel').hidden=true;$('definitionPanel').hidden=true;$('glossaryPanel').hidden=false;drawGlossary()}
 function drawGlossary(){let entries=Object.entries(glossary).sort(([a],[b])=>a.localeCompare(b));let root=$('glossaryEntries');root.replaceChildren();if(!entries.length){root.textContent='No saved words yet. Select a word using the D-pad and press A, then Save to glossary.';return}selectedTerm=Math.max(0,Math.min(entries.length-1,selectedTerm));entries.forEach(([word,def],i)=>{let b=document.createElement('button');b.className='glossaryEntry'+(i===selectedTerm?' chosen':'');b.textContent=word;b.onclick=()=>{selectedTerm=i;definitionReturn='glossary';openDefinition(word)};root.append(b)});root.children[selectedTerm]?.scrollIntoView({block:'nearest'})}
 function actionA(){if(mode==='reading')showWords();else if(mode==='words')lookupWord();else if(mode==='definition'){if(definitionReturn==='glossary'){showGlossary()}else{closeModes()}}else if(mode==='glossary'){let word=Object.keys(glossary).sort()[selectedTerm];if(word){definitionReturn='glossary';openDefinition(word)}}}
@@ -196,7 +196,7 @@ function pollGamepad(){let pads=navigator.getGamepads?.()||[];let p=Array.from(p
 $('test').onclick=()=>{testing=!testing;status(testing?'Press LT and RT; button values will appear here if Chrome exposes them.':'Controller test stopped.')};window.addEventListener('gamepadconnected',e=>status('Gamepad connected: '+e.gamepad.id));pollGamepad();
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;$('install').hidden=false});$('install').onclick=async()=>{if(installPrompt){installPrompt.prompt();await installPrompt.userChoice;installPrompt=null;$('install').hidden=true}};
 function updateLibraryProgress(){const row=document.querySelector('.bookRow.current');if(row){const meta=row.querySelector('.bookMeta'),fill=row.querySelector('.fill');const pct=Math.min(100,Math.round((position+1)/Math.max(1,sentences.length)*100));if(meta)meta.textContent=pct+'% read';if(fill)fill.style.width=pct+'%'}}
-async function refreshLibrary(){let books=await allBooks();const root=$('library');root.replaceChildren();$('storageLabel').textContent=books.length+' book'+(books.length===1?'':'s');if(!books.length){const hint=document.createElement('small');hint.textContent='No books yet. Import a PDF to begin.';root.append(hint)}for(let b of books){const row=document.createElement('div');row.className='bookRow'+(b.id===bookId?' current':'');const left=document.createElement('div');const name=document.createElement('div');name.className='bookTitle';name.textContent=b.title;const pct=Math.min(100,Math.round((b.id===bookId?currentWordOffset():b.wordOffset??0)/Math.max(1,wordTokens((b.sentences||[]).join(' ')).length)*100));const meta=document.createElement('div');meta.className='bookMeta';meta.textContent=pct+'% read';const bar=document.createElement('div');bar.className='bar';const fill=document.createElement('div');fill.className='fill';fill.style.width=pct+'%';bar.append(fill);left.append(name,meta,bar);const actions=document.createElement('div');actions.className='bookActions';const open=document.createElement('button');open.type='button';open.textContent='Open';open.onclick=()=>openBook(b.id);const del=document.createElement('button');del.type='button';del.className='deleteBook';del.textContent='Delete';del.setAttribute('aria-label','Delete '+b.title);del.onclick=async()=>{if(!confirm('Delete "'+b.title+'" from this device? Its saved reading position will also be deleted. This cannot be undone unless you have a backup.'))return;await removeBook(b.id);if(b.id===bookId){bookId='';bookTitle='';sentences=[];sourceSentences=[];sourceKinds=[];segmentStarts=[];position=0;chapters=[];pageStarts=[0];sourcePageStarts=[0];glossary={};closeModes();$('reading').replaceChildren();$('empty').hidden=false;$('bookPct').textContent='0%';$('chapterPct').textContent='0%';$('bookBar').style.width='0%';$('chapterBar').style.width='0%';$('chapterLabel').textContent='Chapter progress';const remaining=await allBooks();if(remaining.length)await openBook(remaining[0].id);else localStorage.removeItem(lastBookKey)}await refreshLibrary();status('Book deleted from this device.')};actions.append(open,del);row.append(left,actions);root.append(row)}return books}
+async function refreshLibrary(){let books=await allBooks();const root=$('library');root.replaceChildren();$('storageLabel').textContent=books.length+' book'+(books.length===1?'':'s');if(!books.length){const hint=document.createElement('small');hint.textContent='No books yet. Import a PDF to begin.';root.append(hint)}for(let b of books){const row=document.createElement('div');row.className='bookRow'+(b.id===bookId?' current':'');const left=document.createElement('div');const name=document.createElement('div');name.className='bookTitle';name.textContent=b.title;const pct=Math.min(100,Math.round((b.id===bookId?currentWordOffset():b.wordOffset??0)/Math.max(1,wordTokens((b.sentences||[]).join(' ')).length)*100));const meta=document.createElement('div');meta.className='bookMeta';meta.textContent=pct+'% read';const bar=document.createElement('div');bar.className='bar';const fill=document.createElement('div');fill.className='fill';fill.style.width=pct+'%';bar.append(fill);left.append(name,meta,bar);const actions=document.createElement('div');actions.className='bookActions';const open=document.createElement('button');open.type='button';open.textContent='Open';open.onclick=()=>openBook(b.id);const del=document.createElement('button');del.type='button';del.className='deleteBook';del.textContent='Delete';del.setAttribute('aria-label','Delete '+b.title);del.onclick=async()=>{if(!confirm('Delete "'+b.title+'" from this device? Its saved reading position will also be deleted. This cannot be undone unless you have a backup.'))return;await removeBook(b.id);if(b.id===bookId){bookId='';bookTitle='';sentences=[];sourceSentences=[];sourceKinds=[];segmentStarts=[];position=0;chapters=[];pageStarts=[0];sourcePageStarts=[0];glossary={};closeModes();$('reading').replaceChildren();$('empty').hidden=false;$('bookPct').textContent='0%';$('chapterPct').textContent='0%';$('bookBar').style.width='0%';$('chapterBar').style.width='0%';$('chapterLabel').textContent='Chapter progress';const remaining=await allBooks();if(remaining.length)await openBook(remaining[0].id);else localStorage.removeItem(lastBookKey)}await refreshLibrary();status('Book deleted from this device. Cloud copy remains available to restore on next sync.')};actions.append(open,del);row.append(left,actions);root.append(row)}return books}
 function downloadJson(filename,data){const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=filename;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),10000)}
 $('exportBackup').onclick=async()=>{try{const books=await allBooks();downloadJson('focus-reader-backup-'+new Date().toISOString().slice(0,10)+'.json',{format:'focus-reader-backup',version:4,createdAt:new Date().toISOString(),books,preferences:preferences(),lastBookId:bookId||localStorage.getItem(lastBookKey)});status('Reading backup exported. Keep this file private; it includes your extracted book text.')}catch(e){status('Backup export failed: '+e.message)}};
 $('importBackup').onchange=async e=>{const file=e.target.files?.[0];if(!file)return;try{if(file.size>60*1024*1024)throw Error('Backup exceeds 60 MB');const data=JSON.parse(await file.text());if(data.format!=='focus-reader-backup'||!Array.isArray(data.books)||data.books.length>500)throw Error('Not a valid Focus Reader backup');for(const b of data.books){if(typeof b.id!=='string'||typeof b.title!=='string'||!Array.isArray(b.sentences)||b.sentences.some(s=>typeof s!=='string')||b.sentences.length>200000)throw Error('Backup contains invalid book data')}if(!confirm('Import '+data.books.length+' book(s)? Matching book IDs will be replaced, including their saved reading positions. Other books will be kept.'))return;for(const b of data.books)await putBook({id:b.id,title:b.title,sentences:b.sentences,kinds:Array.isArray(b.kinds)?b.kinds:[],position:Math.max(0,Math.min(b.sentences.length-1,Number(b.position)||0)),chapters:Array.isArray(b.chapters)?b.chapters:[],pageStarts:Array.isArray(b.pageStarts)?b.pageStarts:[0],glossary:b.glossary&&typeof b.glossary==='object'?b.glossary:{},wordOffset:Number.isFinite(b.wordOffset)?b.wordOffset:undefined});if(data.preferences&&typeof data.preferences==='object'){const safe={};for(const k of ['charLength','dim','fontSize','lineSpacing'])if(data.preferences[k]!==undefined)safe[k]=String(data.preferences[k]);localStorage.setItem(prefsKey,JSON.stringify(safe));applyPreferences()}const books=await refreshLibrary();const chosen=books.find(b=>b.id===data.lastBookId)?.id||books[0]?.id;if(chosen)await openBook(chosen);status('Backup imported: '+data.books.length+' book(s).')}catch(err){status('Backup import failed: '+err.message)}finally{e.target.value=''}};
@@ -306,3 +306,125 @@ move = function(delta) {
   position = next;
   fastHighlight(previous, next);
 };
+
+
+/* V6: Supabase cloud sync. Offline-first: the local IndexedDB library is authoritative
+   while offline; remote sync uses user-scoped RLS and a private Storage bucket. */
+const CLOUD_URL='https://pvrrghyjuwxvqvfcyxvj.supabase.co';
+const CLOUD_KEY='sb_publishable_RkwTYLGeo2f9-EkfRFKFjw_YMjMF5dt';
+const CLOUD_BUCKET='reader-pdf';
+const cloudSessionKey='focus-reader-cloud-session';
+let cloudSession=null,cloudBusy=false,cloudTimer=null,cloudRefreshing=null;
+function cloudMessage(message){$('cloudStatus').textContent=message}
+function cloudHeaders(token=cloudSession?.access_token){return {'apikey':CLOUD_KEY,...(token?{'Authorization':'Bearer '+token}:{})}}
+function cloudSessionSave(session){cloudSession=session;localStorage.setItem(cloudSessionKey,JSON.stringify(session));cloudDisplay()}
+function cloudDisplay(){const signed=!!cloudSession?.access_token;$('cloudSignIn').hidden=signed;$('cloudSignedIn').hidden=!signed;$('cloudAccount').textContent=signed?(cloudSession.user?.email||'Signed in'):''}
+async function cloudRequest(path,{method='GET',body,headers={},raw=false,retry=true}={}){
+  if(!navigator.onLine)throw Error('Offline');
+  const reqHeaders={...cloudHeaders(),...headers};
+  const response=await fetch(CLOUD_URL+path,{method,headers:reqHeaders,body:body===undefined?undefined:(body instanceof Blob||body instanceof ArrayBuffer||body instanceof Uint8Array?body:JSON.stringify(body))});
+  if(response.status===401&&retry&&cloudSession?.refresh_token){await cloudRefresh();return cloudRequest(path,{method,body,headers,raw,retry:false})}
+  if(!response.ok){const detail=await response.text();throw Error(response.status+' '+detail.slice(0,180))}
+  if(raw)return response;
+  if(response.status===204||response.headers.get('content-length')==='0')return null;
+  return response.json();
+}
+async function cloudRefresh(){
+  if(cloudRefreshing)return cloudRefreshing;
+  cloudRefreshing=(async()=>{
+    const refresh=cloudSession?.refresh_token;if(!refresh)throw Error('Session expired');
+    const r=await fetch(CLOUD_URL+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{'apikey':CLOUD_KEY,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:refresh})});
+    if(!r.ok)throw Error('Session expired; sign in again');
+    cloudSessionSave(await r.json());
+  })();try{return await cloudRefreshing}finally{cloudRefreshing=null}
+}
+async function cloudEnsureSession(){
+  if(!cloudSession?.access_token)throw Error('Not signed in');
+  if(cloudSession.expires_at&&Date.now()/1000>cloudSession.expires_at-90)await cloudRefresh();
+}
+function cloudPdfPath(id){return cloudSession.user.id+'/'+encodeURIComponent(id)+'.pdf'}
+async function cloudUploadPdf(book){
+  if(!book.pdfData)return;
+  const data=new Blob([book.pdfData],{type:'application/pdf'});
+  // The bucket's default 50 MB limit is enforced server-side.
+  const path='/storage/v1/object/'+CLOUD_BUCKET+'/'+cloudPdfPath(book.id);
+  // No upsert: existing objects are retained, avoiding the need for an UPDATE storage policy.
+  try{await cloudRequest(path,{method:'POST',body:data,headers:{'Content-Type':'application/pdf','x-upsert':'false'},raw:true})}
+  catch(e){if(!/409|already exists|Duplicate/i.test(e.message))throw e}
+}
+async function cloudDownloadPdf(id){
+  const r=await cloudRequest('/storage/v1/object/authenticated/'+CLOUD_BUCKET+'/'+cloudPdfPath(id),{raw:true});
+  return await r.blob();
+}
+async function cloudPushBook(book){
+  await cloudUploadPdf(book);
+  const record={user_id:cloudSession.user.id,book_id:book.id,title:book.title,reading_position:book.position||0,word_offset:book.wordOffset||0,glossary:book.glossary||{},updated_at:new Date(book.localUpdatedAt||Date.now()).toISOString()};
+  await cloudRequest('/rest/v1/reader_books?on_conflict=user_id,book_id',{method:'POST',body:record,headers:{'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'},raw:true});
+  book.syncDirty=false;book.cloudUpdatedAt=record.updated_at;await putBook(book);
+}
+async function cloudPullBook(row){
+  let b=await getBook(row.book_id);
+  if(!b){
+    const blob=await cloudDownloadPdf(row.book_id);
+    const file=new File([blob],row.title||'book.pdf',{type:'application/pdf'});
+    await importPdf(file,{bookId:row.book_id,fromCloud:true,silent:true});
+    b=await getBook(row.book_id);
+    if(!b)throw Error('Could not extract downloaded PDF '+row.title);
+  }
+  if(b.syncDirty)return;
+  if(b.cloudUpdatedAt&&Date.parse(b.cloudUpdatedAt)>=Date.parse(row.updated_at||0))return;
+  b.position=row.reading_position||0;b.wordOffset=row.word_offset||0;b.glossary=row.glossary||{};
+  b.cloudUpdatedAt=row.updated_at;b.syncDirty=false;await putBook(b);
+  if(bookId===b.id){const word=b.wordOffset;glossary=b.glossary;rebuildSegments(word);scheduleRestoreScroll()}
+}
+async function cloudSync(){
+  if(cloudBusy||!cloudSession||!navigator.onLine)return;
+  cloudBusy=true;$('cloudSync').disabled=true;
+  try{
+    await cloudEnsureSession();cloudMessage('Syncing books…');
+    const remote=await cloudRequest('/rest/v1/reader_books?select=*&order=updated_at.desc&limit=1000');
+    const remoteById=new Map(remote.map(row=>[row.book_id,row]));
+    const books=await allBooks();
+    for(const b of books){
+      const r=remoteById.get(b.id);
+      if(!r||b.syncDirty){
+        // Older local books without dirty metadata should not overwrite an existing cloud version.
+        if(!r||b.syncDirty)await cloudPushBook(b);
+      }else if(!b.cloudUpdatedAt||Date.parse(r.updated_at)>Date.parse(b.cloudUpdatedAt))await cloudPullBook(r);
+    }
+    for(const r of remote){if(!books.some(b=>b.id===r.book_id))await cloudPullBook(r)}
+    const settings=await cloudRequest('/rest/v1/reader_settings?select=*&user_id=eq.'+encodeURIComponent(cloudSession.user.id)+'&limit=1');
+    const dirty=localStorage.getItem('focus-reader-settings-dirty')==='1';
+    if(dirty||!settings.length){
+      await cloudRequest('/rest/v1/reader_settings?on_conflict=user_id',{method:'POST',body:{user_id:cloudSession.user.id,preferences:preferences(),updated_at:new Date().toISOString()},headers:{'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'},raw:true});
+      localStorage.removeItem('focus-reader-settings-dirty');
+    }else if(settings[0]?.preferences&&settings[0].updated_at!==localStorage.getItem('focus-reader-settings-cloud-date')){
+      localStorage.setItem(prefsKey,JSON.stringify(settings[0].preferences));applyPreferences();
+      if(sourceSentences.length){rebuildSegments(currentWordOffset());scheduleRestoreScroll()}
+    }
+    if(settings[0]?.updated_at)localStorage.setItem('focus-reader-settings-cloud-date',settings[0].updated_at);
+    await refreshLibrary();cloudMessage('✓ Synced · '+new Date().toLocaleTimeString());
+  }catch(e){cloudMessage('Sync paused: '+e.message);console.warn('Focus Reader sync:',e)}
+  finally{cloudBusy=false;$('cloudSync').disabled=false}
+}
+function queueCloudSync(){if(!cloudSession||!navigator.onLine)return;clearTimeout(cloudTimer);cloudTimer=setTimeout(cloudSync,2500)}
+$('cloudLogin').onclick=async()=>{
+  const email=$('cloudEmail').value.trim(),password=$('cloudPassword').value;
+  if(!email||!password){cloudMessage('Enter your email and password.');return}
+  $('cloudLogin').disabled=true;cloudMessage('Signing in…');
+  try{
+    const r=await fetch(CLOUD_URL+'/auth/v1/token?grant_type=password',{method:'POST',headers:{'apikey':CLOUD_KEY,'Content-Type':'application/json'},body:JSON.stringify({email,password})});
+    const result=await r.json();if(!r.ok)throw Error(result.msg||result.error_description||result.message||'Sign in failed');
+    cloudSessionSave(result);$('cloudPassword').value='';cloudMessage('Signed in. Starting sync…');await cloudSync();
+  }catch(e){cloudMessage('Sign in failed: '+e.message)}finally{$('cloudLogin').disabled=false}
+};
+$('cloudSync').onclick=cloudSync;
+$('cloudLogout').onclick=async()=>{
+  const token=cloudSession?.access_token;cloudSession=null;localStorage.removeItem(cloudSessionKey);cloudDisplay();cloudMessage('Signed out. Local books remain available.');
+  if(token&&navigator.onLine)fetch(CLOUD_URL+'/auth/v1/logout',{method:'POST',headers:{...cloudHeaders(token)}}).catch(()=>{});
+};
+window.addEventListener('online',()=>{cloudMessage('Online. Syncing…');queueCloudSync()});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)queueCloudSync()});
+setInterval(()=>{if(!document.hidden)cloudSync()},30000);
+try{const saved=JSON.parse(localStorage.getItem(cloudSessionKey)||'null');if(saved?.access_token&&saved?.user?.id)cloudSession=saved}catch{}
+cloudDisplay();if(cloudSession)queueCloudSync();
