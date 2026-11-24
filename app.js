@@ -210,3 +210,52 @@ window.matchMedia('(orientation: portrait)').addEventListener('change',e=>{if(e.
 window.addEventListener('orientationchange',()=>setTimeout(()=>{if(sentences.length)scrollToActive('auto')},350));
 window.addEventListener('pageshow',()=>{if(sentences.length)scheduleRestoreScroll()});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&sentences.length)scheduleRestoreScroll()});
+
+
+/* Faster settings controls */
+
+// Character length: rebuild only when released.
+$('charLength').oninput = () => {
+  $('charLengthValue').textContent =
+    $('charLength').value + ' characters';
+};
+
+$('charLength').onchange = () => {
+  savePreferences();
+  if (sourceSentences.length) {
+    const word = currentWordOffset();
+    rebuildSegments(word);
+    scheduleRestoreScroll();
+  }
+};
+
+// Font size: don't scroll while dragging.
+$('fontSize').oninput = () => {
+  document.documentElement.style.setProperty(
+    '--reader-font',
+    $('fontSize').value + 'px'
+  );
+  $('fontSizeValue').textContent =
+    $('fontSize').value + 'px';
+  savePreferences();
+};
+
+$('fontSize').onchange = () => {
+  if (sentences.length) scheduleRestoreScroll();
+};
+
+// Line spacing: don't scroll while dragging.
+$('lineSpacing').oninput = () => {
+  document.documentElement.style.setProperty(
+    '--reader-line',
+    $('lineSpacing').value
+  );
+  $('lineSpacingValue').textContent =
+    $('lineSpacing').value;
+  savePreferences();
+};
+
+$('lineSpacing').onchange = () => {
+  if (sentences.length) scheduleRestoreScroll();
+};
+
