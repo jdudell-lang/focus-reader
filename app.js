@@ -259,3 +259,50 @@ $('lineSpacing').onchange = () => {
   if (sentences.length) scheduleRestoreScroll();
 };
 
+
+/* Faster RT / LT navigation */
+
+// Update only the previously and newly highlighted blocks.
+function fastHighlight(previous, next) {
+  const oldElement = areaSentence(previous);
+  const newElement = areaSentence(next);
+
+  if (oldElement) {
+    oldElement.classList.remove('active');
+  }
+
+  if (newElement) {
+    newElement.classList.add('active');
+  }
+
+  // Update the progress indicators.
+  const pct = Math.min(
+    100,
+    Math.round((next + 1) / sentences.length * 100)
+  );
+
+  $('bookPct').textContent = pct + '%';
+  $('bookBar').style.width = pct + '%';
+
+  // Save progress without rebuilding the book.
+  savePosition();
+
+  // Scroll immediately, without a slow animation.
+  scrollToActive('auto');
+}
+
+// Replace the original navigation function.
+move = function(delta) {
+  if (mode !== 'reading' || !sentences.length) return;
+
+  const previous = position;
+  const next = Math.max(
+    0,
+    Math.min(sentences.length - 1, position + delta)
+  );
+
+  if (previous === next) return;
+
+  position = next;
+  fastHighlight(previous, next);
+};
